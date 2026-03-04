@@ -27,35 +27,38 @@ show_details = st.sidebar.checkbox("Show Debug / Full Backtest Info", value=Fals
 # ────────────────────────────────────────────────
 # Data fetching – safer version
 # ────────────────────────────────────────────────
-@st.cache_data(ttl=1800, show_spinner="Fetching latest market data...")
+@st.cache_data(ttl=1800, show_spinner="Loading market data...")
 def fetch_data():
     try:
         tickers = ['QQQ', 'SPY', 'MTUM', 'SGD=X']
-        # Download without group_by → usually gives flat columns now
-        df = yf.download(tickers, start='2022-10-01', progress=False, auto_adjust=True)
+        df = yf.download(tickers, start='2022-10-01', progress=False, auto_adjust=True, threads=True)
 
-        # If still multi-index (newer yfinance behavior), flatten to Close prices
+        # Handle possible multi-index
         if isinstance(df.columns, pd.MultiIndex):
-            closes = df.xs('Close', axis=1, level=1, drop_level=True)
+            df = df['Close']
         else:
-            closes = df['Close'] if 'Close' in df.columns else df
+            df = df  # already flat
 
-        # Rename forex ticker consistently
-        if 'SGD=X' in closes.columns:
-            closes = closes.rename(columns={'SGD=X': 'USDSGD'})
+        df = df.rename(columns={'SGD=X': 'USDSGD'})
+        df = df[['QQQ', 'SPY', 'MTUM', 'USDSGD']].dropna(how='all')
 
-        # Keep only needed columns
-        closes = closes[['QQQ', 'SPY', 'MTUM', 'USDSGD']].dropna()
+        if df.empty:
+            st.warning("yfinance returned no data — using fallback simulation mode.")
+            # Minimal fallback (base 100 index, pretend stable prices)
+            dates = pd.date_range('2022-10-01', datetime.now(), freq='B')
+            fallback = pd.DataFrame({
+                'QQQ': 400.0, 'SPY': 500.0, 'MTUM': 180.0, 'USDSGD': 1.35
+            }, index=dates)
+            return fallback
 
-        if closes.empty:
-            st.error("No data returned from yfinance. Check internet or try later.")
-            return None
-
-        return closes
+        return df
 
     except Exception as e:
-        st.error(f"Data download failed: {str(e)}")
-        return None
+        st.error(f"yfinance error: {str(e)}. Falling back to demo data.")
+        # same fallback as above
+        dates = pd.date_range('2022-10-01', datetime.now(), freq='B')
+        fallback = pd.DataFrame(index=dates, columns=['QQQ','SPY','MTUM','USDSGD']).fillna(1.0)
+        return fallback
 
 prices = fetch_data()
 
