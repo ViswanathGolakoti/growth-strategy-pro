@@ -30,27 +30,57 @@ current_mtum_shares = st.sidebar.number_input("Current MTUM shares", value=0.0, 
 # ────────────────────────────────────────────────
 # Data fetch
 # ────────────────────────────────────────────────
-@st.cache_data(ttl=900, show_spinner="Fetching latest prices...")
+@st.cache_data(ttl=300, show_spinner="Fetching latest prices (with retry)...")  # shorter TTL for faster retry
 def get_latest_data():
-    try:
-        tickers = ['QQQ', 'SPY', 'MTUM', 'SGD=X']
-        df = yf.download(tickers, period="2y", interval="1d", progress=False, auto_adjust=True, ignore_tz=True)
+    import time
+    user_agents = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36"
+    ]
 
-        if isinstance(df.columns, pd.MultiIndex):
-            closes = df['Close']
-        else:
-            closes = df
+    for attempt in range(3):
+        try:
+            tickers = ['QQQ', 'SPY', 'MTUM', 'SGD=X']
+            session = yf.utils.get_session()
+            session.headers.update({"User-Agent": user_agents[attempt % len(user_agents)]})
 
-        closes = closes.rename(columns={'SGD=X': 'USDSGD'})
-        closes = closes[['QQQ', 'SPY', 'MTUM', 'USDSGD']].dropna(how='all')
+            df = yf.download(
+                tickers,
+                period="2y",
+                interval="1d",
+                progress=False,
+                auto_adjust=True,
+                ignore_tz=True,
+                session=session
+            )
 
-        if closes.empty:
-            return None
+            if isinstance(df.columns, pd.MultiIndex):
+                closes = df['Close']
+            else:
+                closes = df
 
-        return closes
+            closes = closes.rename(columns={'SGD=X': 'USDSGD'})
+            closes = closes[['QQQ', 'SPY', 'MTUM', 'USDSGD']].dropna(how='all')
 
-    except Exception:
-        return None
+            if not closes.empty:
+                return closes
+
+            time.sleep(2)  # brief backoff
+
+        except Exception as e:
+            st.warning(f"Attempt {attempt+1}/3 failed: {str(e)}")
+            time.sleep(3)
+
+    # Ultimate fallback if all attempts fail
+    st.warning("Yahoo Finance temporarily unavailable — using static demo prices (not real-time).")
+    dates = pd.date_range(end=datetime.now(), periods=500, freq='B')  # business days ~2y
+    fallback = pd.DataFrame(index=dates)
+    fallback['QQQ']   = np.linspace(400, 520, len(dates))   # fake upward trend
+    fallback['SPY']   = np.linspace(450, 580, len(dates))
+    fallback['MTUM']  = np.linspace(160, 220, len(dates))
+    fallback['USDSGD'] = 1.35
+    return fallback
 
 prices = get_latest_data()
 
