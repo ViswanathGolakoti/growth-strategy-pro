@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 import warnings
+import time
 
 warnings.filterwarnings('ignore')
 
@@ -28,11 +29,10 @@ current_spy_shares  = st.sidebar.number_input("Current SPY shares",  value=0.0, 
 current_mtum_shares = st.sidebar.number_input("Current MTUM shares", value=0.0, step=0.1)
 
 # ────────────────────────────────────────────────
-# Data fetch
+# Data fetch with retry & fallback
 # ────────────────────────────────────────────────
-@st.cache_data(ttl=300, show_spinner="Fetching latest prices (with retry)...")  # shorter TTL for faster retry
+@st.cache_data(ttl=300, show_spinner="Fetching latest prices (with retry)...")
 def get_latest_data():
-    import time
     user_agents = [
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
@@ -42,17 +42,13 @@ def get_latest_data():
     for attempt in range(3):
         try:
             tickers = ['QQQ', 'SPY', 'MTUM', 'SGD=X']
-            session = yf.utils.get_session()
-            session.headers.update({"User-Agent": user_agents[attempt % len(user_agents)]})
-
             df = yf.download(
                 tickers,
                 period="2y",
                 interval="1d",
                 progress=False,
                 auto_adjust=True,
-                ignore_tz=True,
-                session=session
+                ignore_tz=True
             )
 
             if isinstance(df.columns, pd.MultiIndex):
@@ -66,17 +62,17 @@ def get_latest_data():
             if not closes.empty:
                 return closes
 
-            time.sleep(2)  # brief backoff
+            time.sleep(2)
 
         except Exception as e:
             st.warning(f"Attempt {attempt+1}/3 failed: {str(e)}")
             time.sleep(3)
 
-    # Ultimate fallback if all attempts fail
-    st.warning("Yahoo Finance temporarily unavailable — using static demo prices (not real-time).")
-    dates = pd.date_range(end=datetime.now(), periods=500, freq='B')  # business days ~2y
+    # Fallback if all attempts fail
+    st.warning("Yahoo Finance temporarily unavailable — using static demo prices.")
+    dates = pd.date_range(end=datetime.now(), periods=500, freq='B')
     fallback = pd.DataFrame(index=dates)
-    fallback['QQQ']   = np.linspace(400, 520, len(dates))   # fake upward trend
+    fallback['QQQ']   = np.linspace(400, 520, len(dates))
     fallback['SPY']   = np.linspace(450, 580, len(dates))
     fallback['MTUM']  = np.linspace(160, 220, len(dates))
     fallback['USDSGD'] = 1.35
@@ -85,8 +81,8 @@ def get_latest_data():
 prices = get_latest_data()
 
 if prices is None or prices.empty:
-    st.error("Could not fetch market data right now. Please try again in a few minutes.")
-    st.stop()
+    st.error("Could not fetch market data right now. Using fallback mode.")
+    # Use fallback data already returned
 
 # ────────────────────────────────────────────────
 # Blended index + weekly indicators
@@ -121,10 +117,9 @@ above_trend   = latest['blended_usd'] > latest['sma20w'] if pd.notna(latest['sma
 rsi_weekly    = latest['rsi14w'] if pd.notna(latest['rsi14w']) else 50.0
 should_trim   = rsi_weekly > 75
 
-# Very approximate drawdown (using blended recent high)
-recent_high = prices['blended_sgd'].rolling(63).max().iloc[-1]  # ~3 months
+recent_high = prices['blended_sgd'].rolling(63).max().iloc[-1]
 approx_dd   = (recent_high - latest['blended_sgd']) / recent_high if recent_high > 0 else 0
-uncle_risk  = approx_dd > 0.12   # warning zone before 15%
+uncle_risk  = approx_dd > 0.12
 
 # ────────────────────────────────────────────────
 # Status box
@@ -133,10 +128,10 @@ if not above_trend:
     st.error("🔴 BELOW 20-WEEK SMA → TREND BROKEN → Consider moving to cash / FD")
     invested_multiplier = 0.0
 elif should_trim:
-    st.warning("🔵 WEEKLY RSI OVERBOUGHT (%.1f) → **TRIM HALF POSITION** recommended" % rsi_weekly)
+    st.warning(f"🔵 WEEKLY RSI OVERBOUGHT ({rsi_weekly:.1f}) → **TRIM HALF POSITION** recommended")
     invested_multiplier = 0.5
 elif uncle_risk:
-    st.warning("🟠 DRAW DOWN APPROACHING UNCLE POINT (≈%.1f%%) → monitor closely" % (approx_dd*100))
+    st.warning(f"🟠 DRAW DOWN APPROACHING UNCLE POINT (≈{approx_dd*100:.1f}%) → monitor closely")
     invested_multiplier = 1.0
 else:
     st.success("🟢 IN TREND – NO TRIM SIGNAL → **HOLD FULL POSITION** (or rebalance to target)")
@@ -152,7 +147,6 @@ invested_target = total_capital * (1 - buffer_pct) * invested_multiplier
 
 weights = {'QQQ': 0.50, 'SPY': 0.20, 'MTUM': 0.30}
 
-# Targets
 targets = {}
 for etf, w in weights.items():
     price_usd = latest[etf]
@@ -191,7 +185,7 @@ for etf, w in weights.items():
     }
 
 # ────────────────────────────────────────────────
-# Display table
+# Display table with safe row-wise styling
 # ────────────────────────────────────────────────
 st.subheader("Live Prices & Rebalance Targets")
 
@@ -209,12 +203,18 @@ for etf, info in targets.items():
 
 df_display = pd.DataFrame(data)
 
-# Simple styling for Action column
-def color_action(val):
-    color = targets[val['ETF']]['action_color'] if val['ETF'] in targets else 'black'
-    return f'color: {color}; font-weight: bold;'
+def color_action(row):
+    etf_name = row.get('ETF', None)
+    if etf_name in targets:
+        color = targets[etf_name]['action_color']
+    else:
+        color = 'black'
+    styles = ['' for _ in row.index]
+    action_idx = row.index.get_loc('Action')
+    styles[action_idx] = f'color: {color}; font-weight: bold;'
+    return styles
 
-styled = df_display.style.applymap(color_action, subset=['Action'])
+styled = df_display.style.apply(color_action, axis=1)
 
 st.dataframe(styled, use_container_width=True, hide_index=True)
 
@@ -239,4 +239,4 @@ if st.button("Show Rebalance Instructions"):
         else:
             st.write(f"**{row['ETF']}**: HOLD")
 
-st.caption("Educational tool only – not financial advice. Rebalance quarterly or on major signals. Past performance ≠ future results.")
+st.caption("Educational tool only – not financial advice. Rebalance quarterly or on major signals.")
