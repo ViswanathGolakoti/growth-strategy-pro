@@ -2,207 +2,211 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import plotly.graph_objects as go
 from datetime import datetime
 import warnings
 
 warnings.filterwarnings('ignore')
 
-st.set_page_config(page_title="Risk-Averse Growth Pro", layout="wide")
+st.set_page_config(page_title="Risk-Averse Growth – Live Rebalance", layout="wide")
 
-st.title("🚀 Risk-Averse Growth Strategy Pro – 10% Cash Buffer")
-st.markdown("**S$20k → 100% in 3 years | Max 3 ETFs | 15% Uncle Point | Live Shares & Rebalance**")
-
-# ────────────────────────────────────────────────
-# Sidebar settings
-# ────────────────────────────────────────────────
-st.sidebar.header("Your Settings")
-
-initial_sgd = st.sidebar.number_input("Initial Capital (SGD)", value=20000.0, step=1000.0)
-my_current_capital = st.sidebar.number_input("My Actual Current Capital (SGD)", value=41350.0, step=100.0)
-buffer_pct = st.sidebar.slider("Permanent Cash Buffer %", 0.05, 0.20, 0.10, step=0.01)
-fd_rate = st.sidebar.slider("FD Rate % (annual)", 0.02, 0.06, 0.035)
-show_details = st.sidebar.checkbox("Show Debug / Full Backtest Info", value=False)
+st.title("🚀 Risk-Averse Growth Strategy – Live Rebalance Tool")
+st.markdown("**70% Growth + 30% Momentum | 10% permanent SGD buffer | RSI trim + trend filter**")
 
 # ────────────────────────────────────────────────
-# Data fetching – safer version
+# Sidebar – User inputs
 # ────────────────────────────────────────────────
-@st.cache_data(ttl=1800, show_spinner="Loading market data...")
-def fetch_data():
+st.sidebar.header("Your Position & Settings")
+
+total_capital = st.sidebar.number_input("My Current Total Capital (SGD)", value=20000.0, step=1000.0, min_value=0.0)
+buffer_pct    = st.sidebar.slider("Permanent Cash Buffer %", 0.05, 0.20, 0.10, step=0.01)
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("Current Holdings (approximate)")
+
+current_qqq_shares  = st.sidebar.number_input("Current QQQ shares",  value=0.0, step=0.1)
+current_spy_shares  = st.sidebar.number_input("Current SPY shares",  value=0.0, step=0.1)
+current_mtum_shares = st.sidebar.number_input("Current MTUM shares", value=0.0, step=0.1)
+
+# ────────────────────────────────────────────────
+# Data fetch
+# ────────────────────────────────────────────────
+@st.cache_data(ttl=900, show_spinner="Fetching latest prices...")
+def get_latest_data():
     try:
         tickers = ['QQQ', 'SPY', 'MTUM', 'SGD=X']
-        df = yf.download(tickers, start='2022-10-01', progress=False, auto_adjust=True, threads=True)
+        df = yf.download(tickers, period="2y", interval="1d", progress=False, auto_adjust=True, ignore_tz=True)
 
-        # Handle possible multi-index
         if isinstance(df.columns, pd.MultiIndex):
-            df = df['Close']
+            closes = df['Close']
         else:
-            df = df  # already flat
+            closes = df
 
-        df = df.rename(columns={'SGD=X': 'USDSGD'})
-        df = df[['QQQ', 'SPY', 'MTUM', 'USDSGD']].dropna(how='all')
+        closes = closes.rename(columns={'SGD=X': 'USDSGD'})
+        closes = closes[['QQQ', 'SPY', 'MTUM', 'USDSGD']].dropna(how='all')
 
-        if df.empty:
-            st.warning("yfinance returned no data — using fallback simulation mode.")
-            # Minimal fallback (base 100 index, pretend stable prices)
-            dates = pd.date_range('2022-10-01', datetime.now(), freq='B')
-            fallback = pd.DataFrame({
-                'QQQ': 400.0, 'SPY': 500.0, 'MTUM': 180.0, 'USDSGD': 1.35
-            }, index=dates)
-            return fallback
+        if closes.empty:
+            return None
 
-        return df
+        return closes
 
-    except Exception as e:
-        st.error(f"yfinance error: {str(e)}. Falling back to demo data.")
-        # same fallback as above
-        dates = pd.date_range('2022-10-01', datetime.now(), freq='B')
-        fallback = pd.DataFrame(index=dates, columns=['QQQ','SPY','MTUM','USDSGD']).fillna(1.0)
-        return fallback
+    except Exception:
+        return None
 
-prices = fetch_data()
+prices = get_latest_data()
 
-if prices is None:
-    st.stop()
-
-# Debug output (visible only if checkbox selected)
-if show_details:
-    st.subheader("Debug: Data shape & columns")
-    st.write("Shape:", prices.shape)
-    st.write("Columns:", list(prices.columns))
-    st.write("First few rows:", prices.head(3))
-
-# ────────────────────────────────────────────────
-# Calculate blended index (base 100)
-# ────────────────────────────────────────────────
-try:
-    base = prices.iloc[0]
-    prices['blended_usd'] = (
-        0.5 * (prices['QQQ'] / base['QQQ']) +
-        0.2 * (prices['SPY'] / base['SPY']) +
-        0.3 * (prices['MTUM'] / base['MTUM'])
-    ) * 100
-
-    prices['blended_sgd'] = prices['blended_usd'] * (prices['USDSGD'] / base['USDSGD'])
-
-except Exception as e:
-    st.error(f"Error calculating blended index: {str(e)}")
+if prices is None or prices.empty:
+    st.error("Could not fetch market data right now. Please try again in a few minutes.")
     st.stop()
 
 # ────────────────────────────────────────────────
-# Weekly indicators (SMA20w + RSI14w)
+# Blended index + weekly indicators
 # ────────────────────────────────────────────────
+base = prices.iloc[0]
+prices['blended_usd'] = (
+    0.5 * (prices['QQQ'] / base['QQQ']) +
+    0.2 * (prices['SPY'] / base['SPY']) +
+    0.3 * (prices['MTUM'] / base['MTUM'])
+) * 100
+
+prices['blended_sgd'] = prices['blended_usd'] * (prices['USDSGD'] / base['USDSGD'])
+
 weekly = prices.resample('W-FRI').last()
-
-weekly['sma20w'] = weekly['blended_usd'].rolling(window=20, min_periods=10).mean()
+weekly['sma20w'] = weekly['blended_usd'].rolling(20, min_periods=10).mean()
 
 delta = weekly['blended_usd'].diff()
-gain = delta.where(delta > 0, 0).rolling(window=14, min_periods=7).mean()
-loss = (-delta.where(delta < 0, 0)).rolling(window=14, min_periods=7).mean()
-rs = gain / loss.replace(0, np.nan)
+gain  = delta.where(delta > 0, 0).rolling(14, min_periods=7).mean()
+loss  = (-delta.where(delta < 0, 0)).rolling(14, min_periods=7).mean()
+rs    = gain / loss.replace(0, np.nan)
 weekly['rsi14w'] = 100 - (100 / (1 + rs))
 
-# Forward fill indicators to daily data
 prices = prices.join(weekly[['sma20w', 'rsi14w']].ffill())
-
-# ────────────────────────────────────────────────
-# Very simple backtest visualization (placeholder – can be expanded later)
-# ────────────────────────────────────────────────
-equity_curve = pd.Series(index=prices.index, dtype=float)
-equity_curve.iloc[0] = initial_sgd
-
-for i in range(1, len(prices)):
-    equity_curve.iloc[i] = equity_curve.iloc[i-1] * (1 + prices['blended_sgd'].iloc[i])
-
-# ────────────────────────────────────────────────
-# LIVE PORTFOLIO SECTION
-# ────────────────────────────────────────────────
-st.subheader("📋 Live Portfolio Execution – " + datetime.now().strftime("%d %b %Y %H:%M %Z"))
 
 latest = prices.iloc[-1]
 usdsgd = latest['USDSGD']
-current_value = my_current_capital
 
-cash_buffer = current_value * buffer_pct
-invested_target = current_value - cash_buffer
+# ────────────────────────────────────────────────
+# Signals
+# ────────────────────────────────────────────────
+above_trend   = latest['blended_usd'] > latest['sma20w'] if pd.notna(latest['sma20w']) else True
+rsi_weekly    = latest['rsi14w'] if pd.notna(latest['rsi14w']) else 50.0
+should_trim   = rsi_weekly > 75
 
-# Current prices
-qqq_price = latest['QQQ']
-spy_price = latest['SPY']
-mtum_price = latest['MTUM']
+# Very approximate drawdown (using blended recent high)
+recent_high = prices['blended_sgd'].rolling(63).max().iloc[-1]  # ~3 months
+approx_dd   = (recent_high - latest['blended_sgd']) / recent_high if recent_high > 0 else 0
+uncle_risk  = approx_dd > 0.12   # warning zone before 15%
 
-qqq_sgd = qqq_price * usdsgd
-spy_sgd = spy_price * usdsgd
-mtum_sgd = mtum_price * usdsgd
+# ────────────────────────────────────────────────
+# Status box
+# ────────────────────────────────────────────────
+if not above_trend:
+    st.error("🔴 BELOW 20-WEEK SMA → TREND BROKEN → Consider moving to cash / FD")
+    invested_multiplier = 0.0
+elif should_trim:
+    st.warning("🔵 WEEKLY RSI OVERBOUGHT (%.1f) → **TRIM HALF POSITION** recommended" % rsi_weekly)
+    invested_multiplier = 0.5
+elif uncle_risk:
+    st.warning("🟠 DRAW DOWN APPROACHING UNCLE POINT (≈%.1f%%) → monitor closely" % (approx_dd*100))
+    invested_multiplier = 1.0
+else:
+    st.success("🟢 IN TREND – NO TRIM SIGNAL → **HOLD FULL POSITION** (or rebalance to target)")
+    invested_multiplier = 1.0
 
-# Price table
-st.write("**Current Live Prices**")
-price_table = pd.DataFrame({
-    'ETF': ['QQQ', 'SPY', 'MTUM'],
-    'Price USD': [round(qqq_price, 2), round(spy_price, 2), round(mtum_price, 2)],
-    'Price SGD': [round(qqq_sgd, 2), round(spy_sgd, 2), round(mtum_sgd, 2)]
-})
-st.dataframe(price_table, use_container_width=True)
+st.caption(f"Weekly RSI(14): **{rsi_weekly:.1f}**  |  Above 20w SMA: **{above_trend}**  |  Approx drawdown: **{approx_dd*100:.1f}%**")
 
-# Target holdings
-targets = {
-    'QQQ':  {'weight': 0.50, 'price_sgd': qqq_sgd},
-    'SPY':  {'weight': 0.20, 'price_sgd': spy_sgd},
-    'MTUM': {'weight': 0.30, 'price_sgd': mtum_sgd}
-}
+# ────────────────────────────────────────────────
+# Calculations
+# ────────────────────────────────────────────────
+cash_buffer     = total_capital * buffer_pct
+invested_target = total_capital * (1 - buffer_pct) * invested_multiplier
+
+weights = {'QQQ': 0.50, 'SPY': 0.20, 'MTUM': 0.30}
+
+# Targets
+targets = {}
+for etf, w in weights.items():
+    price_usd = latest[etf]
+    price_sgd = price_usd * usdsgd
+    target_sgd = invested_target * w
+    target_shares = target_sgd / price_sgd if price_sgd > 0 else 0
+
+    if etf == 'QQQ':
+        current_shares = current_qqq_shares
+    elif etf == 'SPY':
+        current_shares = current_spy_shares
+    else:
+        current_shares = current_mtum_shares
+
+    delta_shares = target_shares - current_shares
+
+    if abs(delta_shares) < 0.4:
+        action = "HOLD"
+        action_color = "gray"
+    elif delta_shares > 0:
+        action = f"BUY {abs(delta_shares):.2f}"
+        action_color = "green"
+    else:
+        action = f"SELL {abs(delta_shares):.2f}"
+        action_color = "red"
+
+    targets[etf] = {
+        'price_usd': round(price_usd, 2),
+        'price_sgd': round(price_sgd, 2),
+        'target_sgd': target_sgd,
+        'target_shares': round(target_shares, 2),
+        'current_shares': current_shares,
+        'delta_shares': round(delta_shares, 2),
+        'action': action,
+        'action_color': action_color
+    }
+
+# ────────────────────────────────────────────────
+# Display table
+# ────────────────────────────────────────────────
+st.subheader("Live Prices & Rebalance Targets")
 
 data = []
 for etf, info in targets.items():
-    target_sgd = invested_target * info['weight']
-    shares = target_sgd / info['price_sgd'] if info['price_sgd'] > 0 else 0
     data.append({
-        'ETF': etf,
-        'Target % (of invested)': f"{info['weight']*100:.0f}%",
-        'Target SGD': f"S${target_sgd:,.0f}",
-        'Shares to Hold': round(shares, 2),
-        'Approx Cost SGD': f"S${target_sgd:,.0f}"
+        "ETF": etf,
+        "Price USD": f"${info['price_usd']}",
+        "Price SGD": f"S${info['price_sgd']}",
+        "Current Shares": info['current_shares'],
+        "Target Shares": info['target_shares'],
+        "Delta Shares": info['delta_shares'],
+        "Action": info['action']
     })
 
-st.write("**Target Holdings (rebalance to these amounts)**")
-holdings_df = pd.DataFrame(data)
-st.dataframe(holdings_df, use_container_width=True, hide_index=True)
+df_display = pd.DataFrame(data)
 
-# Rebalance button
-st.subheader("🔄 One-Click Rebalance Calculator")
-if st.button("Show Exact Buy/Sell Instructions"):
-    st.success("Rebalance to the following:")
+# Simple styling for Action column
+def color_action(val):
+    color = targets[val['ETF']]['action_color'] if val['ETF'] in targets else 'black'
+    return f'color: {color}; font-weight: bold;'
+
+styled = df_display.style.applymap(color_action, subset=['Action'])
+
+st.dataframe(styled, use_container_width=True, hide_index=True)
+
+# ────────────────────────────────────────────────
+# Summary & instructions
+# ────────────────────────────────────────────────
+st.markdown("---")
+
+col1, col2 = st.columns([3,2])
+with col1:
+    st.metric("Cash Buffer (always held)", f"S${cash_buffer:,.0f}", f"{buffer_pct*100:.0f}%")
+with col2:
+    st.metric("Invested Target Today", f"S${invested_target:,.0f}", f"× {invested_multiplier:.1f}")
+
+if st.button("Show Rebalance Instructions"):
+    st.info("**Suggested actions today** (after buffer):")
     for row in data:
-        st.write(f"**{row['ETF']}**: Aim for **{row['Shares to Hold']} shares** ≈ **{row['Approx Cost SGD']}**")
-    st.info(f"Total to be invested (after buffer): **S${invested_target:,.0f}**")
+        if row['Action'].startswith("BUY"):
+            st.success(f"**{row['ETF']}**: BUY ≈ **{row['Delta Shares']:.2f}** shares")
+        elif row['Action'].startswith("SELL"):
+            st.warning(f"**{row['ETF']}**: SELL ≈ **{row['Delta Shares']:.2f}** shares")
+        else:
+            st.write(f"**{row['ETF']}**: HOLD")
 
-# Simple metrics
-col1, col2, col3 = st.columns(3)
-col1.metric("Current Portfolio", f"S${current_value:,.0f}", f"{((current_value/initial_sgd - 1)*100):+.1f}%")
-col2.metric("Cash Buffer", f"S${cash_buffer:,.0f}", f"{buffer_pct*100:.0f}% always safe")
-col3.metric("Invested Target", f"S${invested_target:,.0f}")
-
-# Equity curve (very basic – using blended return only)
-st.subheader("Backtest Equity Curve (simplified)")
-fig = go.Figure()
-fig.add_trace(go.Scatter(
-    x=equity_curve.index,
-    y=equity_curve,
-    mode='lines',
-    name='Portfolio Value',
-    line=dict(color='#1f77b4', width=2.5)
-))
-fig.update_layout(
-    title="Simulated Growth (blended return, no trading rules applied yet)",
-    xaxis_title="Date",
-    yaxis_title="SGD Value",
-    template="plotly_white",
-    hovermode='x unified'
-)
-st.plotly_chart(fig, use_container_width=True)
-
-# Refresh
-if st.button("🔄 Refresh Latest Prices & Recalculate"):
-    st.cache_data.clear()
-    st.rerun()
-
-st.caption("Educational simulation – not financial advice. Max 3 ETFs. Past performance ≠ future results.")
+st.caption("Educational tool only – not financial advice. Rebalance quarterly or on major signals. Past performance ≠ future results.")
