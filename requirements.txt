@@ -1,5 +1,5 @@
-streamlit==1.28.1
-yfinance==0.2.32
-pandas==2.1.1
-numpy==1.26.0
-plotly==5.17.0
+streamlit
+pandas
+numpy
+plotly
+yfinance==0.2.37   # or 0.2.40 if 0.2.37 still glitches — avoid latest 0.2.50+
